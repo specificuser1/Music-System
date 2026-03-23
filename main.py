@@ -9,9 +9,9 @@ import os
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-
 intents = discord.Intents.default()
 intents.message_content = True
+
 bot = commands.Bot(command_prefix="+", intents=intents)
 
 queue = {}
@@ -19,8 +19,17 @@ now_playing = {}
 volume_level = {}
 looping = {}
 
-ytdlp_options = {"format": "bestaudio/best", "quiet": True}
-ffmpeg_options = {"options": "-vn"}
+ytdlp_options = {
+    "format": "bestaudio/best",
+    "quiet": True,
+    "default_search": "ytsearch",
+    "noplaylist": True
+}
+
+ffmpeg_options = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn"
+}
 
 def format_time(sec):
     m, s = divmod(int(sec), 60)
@@ -28,17 +37,21 @@ def format_time(sec):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 def progress_bar(current, total, size=20):
+    if total == 0:
+        return "─" * size
     filled = int(size * current / total)
     return "█" * filled + "─" * (size - filled)
 
 async def play_next(ctx):
     gid = ctx.guild.id
+
     if looping.get(gid) and gid in now_playing:
         song = now_playing[gid]
     else:
         if not queue.get(gid):
             await ctx.voice_client.disconnect()
             return
+
         song = queue[gid].pop(0)
         now_playing[gid] = song
 
@@ -55,106 +68,169 @@ async def play_next(ctx):
     )
 
     start_time = time.time()
-    embed_msg = await send_embed(ctx, song, start_time)
+    embed_msg = await send_embed(ctx, song)
 
     while ctx.voice_client and ctx.voice_client.is_playing():
         elapsed = time.time() - start_time
         bar = progress_bar(elapsed, song["duration"])
+
         embed = discord.Embed(
             title="🎵 Music With Warrior",
             description=f"**{song['title']}**\n`{bar}`\n{format_time(elapsed)}/{format_time(song['duration'])}",
             color=discord.Color.red()
         )
+
         embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_image(url=song["thumbnail"])
+
+        if song["thumbnail"]:
+            embed.set_image(url=song["thumbnail"])
+
         embed.set_footer(text="Bot Dev Subhan")
+
         await embed_msg.edit(embed=embed)
+
         await asyncio.sleep(5)
 
-async def send_embed(ctx, song, start_time):
+async def send_embed(ctx, song):
+
     embed = discord.Embed(
         title="🎵 Music With Warrior",
         description=f"**{song['title']}**\n⏱ {format_time(song['duration'])}",
         color=discord.Color.red()
     )
+
     embed.set_thumbnail(url=ctx.author.display_avatar.url)
-    embed.set_image(url=song["thumbnail"])
+
+    if song["thumbnail"]:
+        embed.set_image(url=song["thumbnail"])
+
     embed.set_footer(text="Dev by Subhan")
+
     view = PlayerButtons(ctx)
+
     return await ctx.send(embed=embed, view=view)
 
+
 class PlayerButtons(discord.ui.View):
+
     def __init__(self, ctx):
         super().__init__(timeout=None)
         self.ctx = ctx
 
     @discord.ui.button(label="Play/Pause", style=discord.ButtonStyle.danger)
     async def play_pause(self, interaction: discord.Interaction, button):
-        if self.ctx.voice_client.is_playing():
-            self.ctx.voice_client.pause()
-        elif self.ctx.voice_client.is_paused():
-            self.ctx.voice_client.resume()
+
+        vc = self.ctx.voice_client
+
+        if not vc:
+            return await interaction.response.defer()
+
+        if vc.is_playing():
+            vc.pause()
+
+        elif vc.is_paused():
+            vc.resume()
+
         await interaction.response.defer()
 
-    @discord.ui.button(label="Skip/Stop", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.danger)
     async def skip(self, interaction: discord.Interaction, button):
-        self.ctx.voice_client.stop()
+
+        vc = self.ctx.voice_client
+
+        if vc:
+            vc.stop()
+
         await interaction.response.defer()
 
-    @discord.ui.button(label="Loop ON/OFF", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Loop", style=discord.ButtonStyle.danger)
     async def loop_btn(self, interaction: discord.Interaction, button):
+
         gid = self.ctx.guild.id
+
         looping[gid] = not looping.get(gid, False)
-        await interaction.response.send_message(f"🔁 Loop {'ON' if looping[gid] else 'OFF'}", ephemeral=True)
+
+        await interaction.response.send_message(
+            f"🔁 Loop {'ON' if looping[gid] else 'OFF'}",
+            ephemeral=True
+        )
 
     @discord.ui.button(label="Vol -", style=discord.ButtonStyle.danger)
     async def volume_down(self, interaction: discord.Interaction, button):
+
         gid = self.ctx.guild.id
-        volume_level[gid] = max(volume_level.get(gid,0.5) - 0.1, 0)
-        if self.ctx.voice_client.source:
-            self.ctx.voice_client.source.volume = volume_level[gid]
+
+        volume_level[gid] = max(volume_level.get(gid, 0.5) - 0.1, 0)
+
+        vc = self.ctx.voice_client
+
+        if vc and vc.source:
+            vc.source.volume = volume_level[gid]
+
         await interaction.response.defer()
 
     @discord.ui.button(label="Vol +", style=discord.ButtonStyle.danger)
     async def volume_up(self, interaction: discord.Interaction, button):
+
         gid = self.ctx.guild.id
-        volume_level[gid] = min(volume_level.get(gid,0.5) + 0.1, 1)
-        if self.ctx.voice_client.source:
-            self.ctx.voice_client.source.volume = volume_level[gid]
+
+        volume_level[gid] = min(volume_level.get(gid, 0.5) + 0.1, 1)
+
+        vc = self.ctx.voice_client
+
+        if vc and vc.source:
+            vc.source.volume = volume_level[gid]
+
         await interaction.response.defer()
 
     @discord.ui.button(label="Queue", style=discord.ButtonStyle.danger)
     async def show_queue(self, interaction: discord.Interaction, button):
+
         q = queue.get(self.ctx.guild.id, [])
+
         if not q:
-            await interaction.response.send_message("📭 Queue empty", ephemeral=True)
-        else:
-            msg = "\n".join([f"{i+1}. {s['title']}" for i,s in enumerate(q)])
-            await interaction.response.send_message(f"📜 **Queue:**\n{msg}", ephemeral=True)
+            return await interaction.response.send_message(
+                "📭 Queue empty",
+                ephemeral=True
+            )
+
+        msg = "\n".join([f"{i+1}. {s['title']}" for i, s in enumerate(q)])
+
+        await interaction.response.send_message(
+            f"📜 **Queue:**\n{msg}",
+            ephemeral=True
+        )
+
 
 @bot.command()
 async def play(ctx, *, search):
+
     if not ctx.author.voice:
-        return await ctx.send("❌ Voice channel join karo")
+        return await ctx.send("❌ Pehle voice channel join karo")
 
     if not ctx.voice_client:
         await ctx.author.voice.channel.connect()
 
     with yt_dlp.YoutubeDL(ytdlp_options) as ydl:
-        info = ydl.extract_info(f"ytsearch:{search}", download=False)
-        data = info["entries"][0]
+
+        info = ydl.extract_info(search, download=False)
+
+        if "entries" in info:
+            info = info["entries"][0]
 
     song = {
-        "url": data["url"],
-        "title": data["title"],
-        "duration": data.get("duration",0),
-        "thumbnail": data.get("thumbnail")
+        "url": info["url"],
+        "title": info["title"],
+        "duration": info.get("duration", 0),
+        "thumbnail": info.get("thumbnail")
     }
 
     queue.setdefault(ctx.guild.id, []).append(song)
-    await ctx.send(f"➕ Added New Song of Your Queue**{song['title']}**")
+
+    await ctx.send(f"➕ Added to queue: **{song['title']}**")
 
     if not ctx.voice_client.is_playing():
         await play_next(ctx)
-        
-bot.run("DISCORD_TOKEN")
+
+
+bot.run(TOKEN)
